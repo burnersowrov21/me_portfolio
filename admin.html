@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sowrov Das | Admin Inbox</title>
+  <style>
+    :root { color-scheme: dark; --bg:#090405; --panel:#160b0d; --line:#4b1b22; --red:#e6192e; --muted:#b99b9e; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; background:radial-gradient(circle at 80% 0,#321017 0,#090405 42%); color:#fff; font:15px system-ui,sans-serif; }
+    main { width:min(1100px,calc(100% - 32px)); margin:0 auto; padding:48px 0; }
+    h1,h2 { margin:0; font-weight:800; letter-spacing:.02em; }
+    h1 { font-size:clamp(28px,5vw,48px); }
+    h2 { font-size:20px; }
+    .eyebrow { color:#ff5968; font-size:12px; font-weight:800; letter-spacing:.16em; text-transform:uppercase; margin-bottom:10px; }
+    .panel { background:#120809eF; border:1px solid var(--line); border-radius:12px; padding:24px; box-shadow:0 20px 60px #0008; }
+    .login { max-width:440px; margin:8vh auto 0; }
+    .stack { display:grid; gap:14px; }
+    input,button { width:100%; border:1px solid #51242b; border-radius:8px; padding:13px 14px; background:#1d1012; color:#fff; font:inherit; }
+    button { background:var(--red); border-color:var(--red); cursor:pointer; font-weight:800; }
+    button.secondary { width:auto; background:transparent; border-color:#71303a; }
+    button:disabled { opacity:.6; cursor:wait; }
+    .error { color:#ff7180; min-height:20px; }
+    .toolbar { display:flex; justify-content:space-between; gap:16px; align-items:center; margin:30px 0 16px; }
+    .messages { display:grid; gap:14px; }
+    .message { border:1px solid var(--line); border-radius:10px; padding:18px; background:#14090b; }
+    .message-head { display:flex; justify-content:space-between; gap:16px; align-items:flex-start; }
+    .message-title { font-size:18px; font-weight:800; }
+    .meta { color:var(--muted); font-size:13px; margin-top:5px; }
+    .message-body { white-space:pre-wrap; color:#eadde0; line-height:1.6; margin:16px 0; }
+    .message-actions { display:flex; justify-content:flex-end; gap:8px; }
+    .badge { padding:4px 8px; border-radius:4px; font-size:11px; font-weight:800; margin-left:8px; vertical-align:middle; }
+    .badge.unread { background:var(--red); color:#fff; }
+    .badge.read { background:#333; color:#aaa; }
+    .empty { color:var(--muted); text-align:center; padding:40px 10px; }
+    @media (max-width:600px) { main { padding:24px 0; } .panel { padding:18px; } .toolbar { align-items:flex-start; flex-direction:column; } button.secondary { width:100%; } }
+  </style>
+</head>
+<body>
+  <main>
+    <section id="loginView" class="panel login">
+      <div class="eyebrow">Private Area</div>
+      <h1>Admin Inbox</h1>
+      <p style="color:var(--muted)">Sign in with the Firebase admin account to view contact messages.</p>
+      <form id="loginForm" class="stack">
+        <input id="adminEmail" type="email" placeholder="Admin email" autocomplete="username" required>
+        <input id="adminPassword" type="password" placeholder="Password" autocomplete="current-password" required>
+        <button id="loginButton" type="submit">SIGN IN</button>
+        <div id="loginError" class="error" role="alert"></div>
+      </form>
+    </section>
+
+    <section id="inboxView" hidden>
+      <div class="eyebrow">Sowrov Das</div>
+      <h1>Contact Messages</h1>
+      <div class="toolbar"><span id="messageCount" style="color:var(--muted)"></span><button id="logoutButton" class="secondary">SIGN OUT</button></div>
+      <div id="messages" class="messages"><div class="panel empty">Loading messages...</div></div>
+    </section>
+  </main>
+  <script>
+    const API_KEY = 'AIzaSyBwzl_sK1gWaCJFp8F0A-Scu5ro4Bvy4U8';
+    const PROJECT_ID = 'sowrov-b9f40';
+    const COLLECTION = 'contactMessages';
+    const tokenKey = 'sowrov_admin_token';
+    const loginView = document.querySelector('#loginView');
+    const inboxView = document.querySelector('#inboxView');
+    const messagesView = document.querySelector('#messages');
+    const countView = document.querySelector('#messageCount');
+
+    const firestoreUrl = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents/${COLLECTION}`;
+    const value = (fields, key) => fields?.[key]?.stringValue || fields?.[key]?.timestampValue || fields?.[key]?.booleanValue || '';
+    const formatDate = iso => { try { return new Date(iso).toLocaleString('en-US', { month:'short', day:'numeric', year:'numeric', hour:'numeric', minute:'2-digit', hour12:true }).replace(',', ' ·'); } catch { return iso; } };
+    const esc = text => String(text).replace(/[&<>"']/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[char]));
+
+    function showInbox() { loginView.hidden = true; inboxView.hidden = false; loadMessages(); }
+    function showLogin() { loginView.hidden = false; inboxView.hidden = true; }
+
+    async function signIn(email, password) {
+      const response = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${API_KEY}`, {
+        method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ email, password, returnSecureToken:true })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error?.message || 'Unable to sign in');
+      localStorage.setItem(tokenKey, data.idToken);
+    }
+
+    async function loadMessages() {
+      const token = localStorage.getItem(tokenKey);
+      if (!token) return showLogin();
+      const response = await fetch(firestoreUrl, { headers:{ Authorization:`Bearer ${token}` } });
+      if (response.status === 401 || response.status === 403) { localStorage.removeItem(tokenKey); return showLogin(); }
+      const data = await response.json();
+      if (!response.ok) { messagesView.innerHTML = '<div class="panel empty">Could not load messages. Check Firestore rules.</div>'; return; }
+      const documents = (data.documents || []).sort((a,b) => String(value(b.fields,'createdAt')).localeCompare(String(value(a.fields,'createdAt'))));
+      countView.textContent = `${documents.length} message${documents.length === 1 ? '' : 's'}`;
+      messagesView.innerHTML = documents.length ? documents.map(document => {
+        const fields = document.fields || {};
+        const createdAt = value(fields,'createdAt');
+        const isRead = fields?.read?.booleanValue === true;
+        const badge = isRead ? '<span class="badge read">READ</span>' : '<span class="badge unread">NEW</span>';
+        const email = value(fields,'email');
+        const subject = value(fields,'subject') || 'Portfolio inquiry';
+        return `<article class="message"><div class="message-head"><div><div class="message-title">${esc(subject)} ${badge}</div><div class="meta">${esc(value(fields,'name'))} | ${esc(email)} | ${esc(value(fields,'phone'))}</div></div><div class="meta">${esc(formatDate(createdAt))}</div></div><div class="message-body">${esc(value(fields,'message'))}</div><div class="message-actions"><a href="mailto:${esc(email)}?subject=Re: ${esc(subject)}" style="text-decoration:none"><button class="secondary" type="button">REPLY</button></a>${!isRead ? `<button class="secondary mark-read-button" data-name="${esc(document.name)}">MARK AS READ</button>` : ''}<button class="secondary delete-button" data-name="${esc(document.name)}">DELETE</button></div></article>`;
+      }).join('') : '<div class="panel empty">No contact messages yet.</div>';
+    }
+
+    document.querySelector('#loginForm').addEventListener('submit', async event => {
+      event.preventDefault();
+      const button = document.querySelector('#loginButton');
+      const error = document.querySelector('#loginError');
+      button.disabled = true; error.textContent = '';
+      try { await signIn(document.querySelector('#adminEmail').value, document.querySelector('#adminPassword').value); showInbox(); }
+      catch (loginError) {
+        let msg = loginError.message.replaceAll('_',' ');
+        if (msg.toLowerCase().includes('api key not valid')) {
+          msg = '⚠️ Firebase API Key টি সঠিক নয়! Firebase Console -> Project Settings -> General থেকে আপনার Web API Key টি নিয়ে admin.html এ বসান।';
+        }
+        error.textContent = msg;
+      }
+      finally { button.disabled = false; }
+    });
+
+    document.querySelector('#logoutButton').addEventListener('click', () => { localStorage.removeItem(tokenKey); showLogin(); });
+    messagesView.addEventListener('click', async event => {
+      const token = localStorage.getItem(tokenKey);
+      const deleteBtn = event.target.closest('.delete-button');
+      const readBtn = event.target.closest('.mark-read-button');
+      
+      if (deleteBtn) {
+        if (!confirm('Delete this message?')) return;
+        const response = await fetch(`https://firestore.googleapis.com/v1/${deleteBtn.dataset.name}`, { method:'DELETE', headers:{ Authorization:`Bearer ${token}` } });
+        if (response.ok) loadMessages(); else alert('Could not delete this message.');
+      } else if (readBtn) {
+        const response = await fetch(`https://firestore.googleapis.com/v1/${readBtn.dataset.name}?updateMask.fieldPaths=read`, { 
+          method: 'PATCH', 
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ fields: { read: { booleanValue: true } } })
+        });
+        if (response.ok) loadMessages(); else alert('Could not mark as read.');
+      }
+    });
+    if (localStorage.getItem(tokenKey)) showInbox();
+  </script>
+</body>
+</html>
